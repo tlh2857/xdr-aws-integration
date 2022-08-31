@@ -1,0 +1,481 @@
+{
+	"AWSTemplateFormatVersion": "2010-09-09",
+	"Description": "AWS CloudFormation Template: Template which will create an s3 bucket with SQS. The template requires you to provide an AWS account ID to provide cross account access to.",
+	"Metadata": {
+		"AWS::CloudFormation::Interface": {
+			"ParameterGroups": [
+				{
+					"Label": {
+						"default": "Cortex XDR Integration"
+					},
+					"Parameters": ["Route53BucketName","FlowLogsBucketName","CloudTrailBucketName","Route53QueueNameFromUser","CloudTrailQueueNameFromUser","FlowLogsQueueNameFromUser"]
+				}
+			],
+			"ParameterLabels": {
+				"Route53BucketName": {
+					"default": "Route53 Bucket Name"
+				},
+				"FlowLogsBucketName": {
+					"default": "Flow Logs Bucket Name"
+				},
+				"CloudTrailBucketName": {
+					"default": "CloudTrail Bucket Name"
+				},
+				"Route53QueueNameFromUser": {
+					"default": "Route53 Queue Name"
+				},
+				"CloudTrailQueueNameFromUser": {
+					"default": "CloudTrail Queue Name"
+				},
+				"FlowLogsQueueNameFromUser": {
+					"default": "Flow Logs Queue Name"
+				}
+			}
+		}
+	},
+	"Parameters": {
+		"externalId": {
+			"Type": "String",
+			"Description": "A Random UUID that you generate as an added layer of security. Can use online UUID generator. Will share with IAM Assume Role and with Cortex XDR."
+		  },
+		"roleName": {
+			"Type": "String",
+			"Description": "The name that you want to give to the role that Cortex XDR will assume in order to pull logs from the SQS queue"
+		},
+		"Route53BucketName": {
+			"Type": "String",
+			"Description": "The name of the S3 Bucket to create for storing Route53 Logs.",
+			"AllowedPattern":"[-a-z0-9\\.]*"
+		},
+		"Route53QueueNameFromUser": {
+			"Type": "String",
+			"Default": "xdr-route53",
+			"Description": "Enter the Queue name."
+		},
+		"CloudTrailBucketName": {
+			"Type": "String",
+			"Description": "The name of the S3 Bucket to create for storing CloudTrail Logs.",
+			"AllowedPattern":"[-a-z0-9\\.]*"
+		},
+		"CloudTrailQueueNameFromUser": {
+			"Type": "String",
+			"Default": "xdr-cloudtrail",
+			"Description": "Enter the Queue name."
+		},
+		"FlowLogsBucketName": {
+			"Type": "String",
+			"Description": "The name of the S3 Bucket to create for storing VPC Flow Logs.",
+			"AllowedPattern":"[-a-z0-9\\.]*"
+		},
+		"FlowLogsQueueNameFromUser": {
+			"Type": "String",
+			"Default": "xdr-flowlogs",
+			"Description": "Enter the Queue name."
+		}
+	},
+	"Resources": {
+		"xdrRole": {
+			"DependsOn": ["Route53S3BUCKET","CloudTrailS3BUCKET","FlowLogsS3BUCKET"],
+			"Type" : "AWS::IAM::Role",
+			"Properties" : {
+				"AssumeRolePolicyDocument": {
+					"Version": "2012-10-17",
+					"Statement": [
+						{
+							"Effect": "Allow",
+							"Action": ["sts:AssumeRole"],
+							"Principal": {
+								"AWS": "006742885340"
+							},
+							"Condition": {
+								"StringEquals": {
+									"sts:ExternalId": {
+										"Ref": "externalId"
+									}
+								}
+							}
+						}
+					]
+				},
+				"Description" : "Role that Cortex XDR will assume in order to pull logs from the SQS queue",
+				"ManagedPolicyArns": [
+					"arn:aws:iam::aws:policy/SecurityAudit"
+				  ],
+				"Path" : "/",
+				"Policies" : [ 
+					{
+						"PolicyName": "xdr-inline-policy",
+					    "PolicyDocument": {
+							"Version": "2012-10-17",
+							"Statement": [
+								{
+									"Effect": "Allow",
+									"Action": "s3:GetObject",
+									"Resource": [
+										{ "Fn::Sub" : "arn:aws:s3:::${CloudTrailBucketName}/*" },
+										{ "Fn::Sub" : "arn:aws:s3:::${Route53BucketName}/*" },
+										{ "Fn::Sub" : "arn:aws:s3:::${FlowLogsBucketName}/*" } 
+									]
+								},
+								{
+									"Effect": "Allow",
+									 "Action": [
+										"sqs:ReceiveMessage",
+										"sqs:DeleteMessage",
+										"sqs:ChangeMessageVisibility"
+									],
+									"Resource": [
+										{ "Fn::GetAtt" : [ "Route53SQSQueue", "Arn" ] },
+										{ "Fn::GetAtt" : [ "FlowLogsSQSQueue", "Arn" ] },
+										{ "Fn::GetAtt" : [ "CloudTrailSQSQueue", "Arn" ] }
+									]
+								}
+							]
+						}
+					}
+				 ],
+				"RoleName" : {
+					"Ref": "roleName"
+				}
+			  }
+		  },
+		"Route53S3BUCKET": {
+			"Type": "AWS::S3::Bucket",
+			"DependsOn": ["Route53SQSQueue"],
+			"Properties": {
+				"BucketName": {
+					"Ref": "Route53BucketName"
+				},
+				"NotificationConfiguration": {
+					"QueueConfigurations": [
+						{
+							"Event": "s3:ObjectCreated:*",
+							"Queue": {
+								"Fn::GetAtt": ["Route53SQSQueue", "Arn"]
+							}
+						}
+					]
+				}
+			},
+			"DeletionPolicy": "Retain"
+		},
+		"FlowLogsS3BUCKET": {
+			"Type": "AWS::S3::Bucket",
+			"DependsOn": ["FlowLogsSQSQueue"],
+			"Properties": {
+				"BucketName": {
+					"Ref": "FlowLogsBucketName"
+				},
+				"NotificationConfiguration": {
+					"QueueConfigurations": [
+						{
+							"Event": "s3:ObjectCreated:*",
+							"Queue": {
+								"Fn::GetAtt": ["FlowLogsSQSQueue", "Arn"]
+							}
+						}
+					]
+				}
+			},
+			"DeletionPolicy": "Retain"
+		},
+		"CloudTrailS3BUCKET": {
+			"Type": "AWS::S3::Bucket",
+			"DependsOn": ["CloudTrailSQSQueue"],
+			"Properties": {
+				"BucketName": {
+					"Ref": "CloudTrailBucketName"
+				},
+				"NotificationConfiguration": {
+					"QueueConfigurations": [
+						{
+							"Event": "s3:ObjectCreated:*",
+							"Queue": {
+								"Fn::GetAtt": ["CloudTrailSQSQueue", "Arn"]
+							}
+						}
+					]
+				}
+			},
+			"DeletionPolicy": "Retain"
+		},
+		"Route53S3BUCKETPOL": {
+			"Type": "AWS::S3::BucketPolicy",
+			"Properties": {
+				"Bucket": {
+					"Ref": "Route53S3BUCKET"
+				},
+				"PolicyDocument": {
+					"Id": "CrossAccessPolicy",
+					"Version": "2012-10-17",
+					"Statement": [
+						{
+							"Sid": "AWSLogDeliveryAclCheck",
+							"Action": "s3:GetBucketAcl",
+							"Effect": "Allow",
+							"Resource": {
+								"Fn::Sub": "arn:aws:s3:::${Route53BucketName}"
+							},
+							"Principal": {
+								"Service": "delivery.logs.amazonaws.com"
+							}
+						}
+					]
+				}
+			}
+		},
+		"CloudTrailS3BUCKETPOL": {
+			"Type": "AWS::S3::BucketPolicy",
+			"Properties": {
+				"Bucket": {
+					"Ref": "CloudTrailS3BUCKET"
+				},
+				"PolicyDocument": {
+					"Id": "CrossAccessPolicy",
+					"Version": "2012-10-17",
+					"Statement": [
+						{
+							"Sid": "AWSLogDeliveryAclCheck",
+							"Action": "s3:GetBucketAcl",
+							"Effect": "Allow",
+							"Resource": {
+								"Fn::Sub": "arn:aws:s3:::${CloudTrailBucketName}"
+							},
+							"Principal": {
+								"Service": "delivery.logs.amazonaws.com"
+							}
+						}
+					]
+				}
+			}
+		},
+		"FlowLogsS3BUCKETPOL": {
+			"Type": "AWS::S3::BucketPolicy",
+			"Properties": {
+				"Bucket": {
+					"Ref": "FlowLogsS3BUCKET"
+				},
+				"PolicyDocument": {
+					"Id": "CrossAccessPolicy",
+					"Version": "2012-10-17",
+					"Statement": [
+						{
+							"Sid": "AWSLogDeliveryAclCheck",
+							"Action": "s3:GetBucketAcl",
+							"Effect": "Allow",
+							"Resource": {
+								"Fn::Sub": "arn:aws:s3:::${FlowLogsBucketName}"
+							},
+							"Principal": {
+								"Service": "delivery.logs.amazonaws.com"
+							}
+						}
+					]
+				}
+			}
+		},
+		"Route53SQSQueue": {
+			"Type": "AWS::SQS::Queue",
+			"Properties": {
+				"QueueName": {
+					"Ref": "Route53QueueNameFromUser"
+				},
+				"DelaySeconds": 5,
+				"ReceiveMessageWaitTimeSeconds": 0,
+				"VisibilityTimeout": 0
+			}
+		},
+		"FlowLogsSQSQueue": {
+			"Type": "AWS::SQS::Queue",
+			"Properties": {
+				"QueueName": {
+					"Ref": "FlowLogsQueueNameFromUser"
+				},
+				"DelaySeconds": 5,
+				"ReceiveMessageWaitTimeSeconds": 0,
+				"VisibilityTimeout": 0
+			}
+		},
+		"CloudTrailSQSQueue": {
+			"Type": "AWS::SQS::Queue",
+			"Properties": {
+				"QueueName": {
+					"Ref": "CloudTrailQueueNameFromUser"
+				},
+				"DelaySeconds": 5,
+				"ReceiveMessageWaitTimeSeconds": 0,
+				"VisibilityTimeout": 0
+			}
+		},
+		"Route53QueuePolicy": {
+			"Type": "AWS::SQS::QueuePolicy",
+			"DependsOn": ["Route53SQSQueue"],
+			"Properties": {
+				"PolicyDocument": {
+					"Version": "2012-10-17",
+					"Statement": [
+						{
+							"Effect": "Allow",
+							"Principal": {
+								"AWS": "*"
+							},
+							"Action": ["SQS:SendMessage"],
+							"Resource": {
+								"Fn::GetAtt": ["Route53SQSQueue", "Arn"]
+							}
+						}
+					]
+				},
+				"Queues": [
+					{
+						"Ref": "Route53SQSQueue"
+					}
+				]
+			}
+		},
+		"FlowLogsQueuePolicy": {
+			"Type": "AWS::SQS::QueuePolicy",
+			"DependsOn": ["FlowLogsSQSQueue"],
+			"Properties": {
+				"PolicyDocument": {
+					"Version": "2012-10-17",
+					"Statement": [
+						{
+							"Effect": "Allow",
+							"Principal": {
+								"AWS": "*"
+							},
+							"Action": ["SQS:SendMessage"],
+							"Resource": {
+								"Fn::GetAtt": ["FlowLogsSQSQueue", "Arn"]
+							}
+						}
+					]
+				},
+				"Queues": [
+					{
+						"Ref": "FlowLogsSQSQueue"
+					}
+				]
+			}
+		},
+		"CloudTrailQueuePolicy": {
+			"Type": "AWS::SQS::QueuePolicy",
+			"DependsOn": ["CloudTrailSQSQueue"],
+			"Properties": {
+				"PolicyDocument": {
+					"Version": "2012-10-17",
+					"Statement": [
+						{
+							"Effect": "Allow",
+							"Principal": {
+								"AWS": "*"
+							},
+							"Action": ["SQS:SendMessage"],
+							"Resource": {
+								"Fn::GetAtt": ["CloudTrailSQSQueue", "Arn"]
+							}
+						}
+					]
+				},
+				"Queues": [
+					{
+						"Ref": "CloudTrailSQSQueue"
+					}
+				]
+			}
+		}
+	},
+	"Outputs": {
+		"Route53Bucket": {
+			"Description": "Route53 S3 Bucket Name",
+			"Value": {
+				"Ref": "Route53S3BUCKET"
+			}
+		},
+		"Route53BucketPolicy": {
+			"Description": "Route53 S3 Bucket Policy Name",
+			"Value": {
+				"Ref": "Route53S3BUCKETPOL"
+			}
+		},
+		"Route53QueueURL": {
+			"Description": "URL of newly created Route53 SQS Queue",
+			"Value": {
+				"Ref": "Route53SQSQueue"
+			}
+		},
+		"Route53QueueARN": {
+			"Description": "ARN of newly created Route53 SQS Queue",
+			"Value": {
+				"Fn::GetAtt": ["Route53SQSQueue", "Arn"]
+			}
+		},
+		"Route53QueueName": {
+			"Description": "Name newly created Route53 SQS Queue",
+			"Value": {
+				"Fn::GetAtt": ["Route53SQSQueue", "QueueName"]
+			}
+		},
+		"FlowLogsBucket": {
+			"Description": "FlowLogs S3 Bucket Name",
+			"Value": {
+				"Ref": "FlowLogsS3BUCKET"
+			}
+		},
+		"FlowLogsBucketPolicy": {
+			"Description": "FlowLogs S3 Bucket Policy Name",
+			"Value": {
+				"Ref": "FlowLogsS3BUCKETPOL"
+			}
+		},
+		"FlowLogsQueueURL": {
+			"Description": "URL of newly created FlowLogs SQS Queue",
+			"Value": {
+				"Ref": "FlowLogsSQSQueue"
+			}
+		},
+		"FlowLogsQueueARN": {
+			"Description": "ARN of newly created FlowLogs SQS Queue",
+			"Value": {
+				"Fn::GetAtt": ["FlowLogsSQSQueue", "Arn"]
+			}
+		},
+		"FlowLogsQueueName": {
+			"Description": "Name newly created FlowLogs SQS Queue",
+			"Value": {
+				"Fn::GetAtt": ["FlowLogsSQSQueue", "QueueName"]
+			}
+		},
+		"CloudTrailBucket": {
+			"Description": "CloudTrail S3 Bucket Name",
+			"Value": {
+				"Ref": "CloudTrailS3BUCKET"
+			}
+		},
+		"CloudTrailBucketPolicy": {
+			"Description": "CloudTrail S3 Bucket Policy Name",
+			"Value": {
+				"Ref": "CloudTrailS3BUCKETPOL"
+			}
+		},
+		"CloudTrailQueueURL": {
+			"Description": "URL of newly created CloudTrail SQS Queue",
+			"Value": {
+				"Ref": "CloudTrailSQSQueue"
+			}
+		},
+		"CloudTrailQueueARN": {
+			"Description": "ARN of newly created SQS Queue",
+			"Value": {
+				"Fn::GetAtt": ["CloudTrailSQSQueue", "Arn"]
+			}
+		},
+		"CloudTrailQueueName": {
+			"Description": "Name newly created CloudTrail SQS Queue",
+			"Value": {
+				"Fn::GetAtt": ["CloudTrailSQSQueue", "QueueName"]
+			}
+		}
+	}
+}
